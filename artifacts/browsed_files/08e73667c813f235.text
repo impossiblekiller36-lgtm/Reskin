@@ -1,0 +1,184 @@
+/* 🤓☝️ *\
+Better with:
+  https://github.com/apk-editor/aXML (except for editing Play Dynamic Feature dl: <manifest dist:module>, 70KB)
+  https://github.com/Familyye/AIDE-Plus-AS/blob/master/app_rewrite/src/main/java/com/sdklite/aapt/Aapt.java#L44 (R.java impl, 138K .dex in AIDE)
+  https://github.com/Storyyeller/enjarify (147K py for dex2jar, ground truth)
+  https://sketchware.pro/ (works as javac, /sd/.sketchware/data/601/files/java/com/**)
+
+Learn more:
+  AOSP works like browser-stack w/o F12 & "dynlink URLs"
+  https://github.com/androguard/axml (150K py, ground truth)
+  https://github.com/thatskriptkid/Kaitai-Struct-Android-Manifest-binary-XML/blob/master/AndroidManifest.ksy (11K. try https://ide.kaitai.io/)
+  https://blog.micblo.com/2022/06/14/用JavaScript解析Android-XML-axml/  (19K)
+
+  https://github.com/linkedin/dexmaker (12K jar port of https://source.android.com/docs/core/runtime/dalvik-bytecode or com.sdklite.dex)
+  https://autoxjs.dayudada.com/
+
+Boring citations:
+  https://engineering.linecorp.com/en/blog/air-go-apk-signing
+  https://github.com/obfusk/apksigtool/blob/master/apksigtool/__init__.py#L1142
+  https://github.com/sisong/ApkDiffPatch
+  https://blog.quarkslab.com/android-application-diffing-engine-overview.html (SourceMap-less, like Diaphora)
+\* 🤓☝️ */
+
+// === v2+v1 SIGNER ALGO ===
+let
+  U8 = Uint8Array,
+  u32 = n => { let b = new U8(4); new DataView(b.buffer).setUint32(0, n, true); return b },
+  u64 = n => { let b = new U8(8); new DataView(b.buffer).setBigUint64(0, BigInt(n), true); return b },
+  cat = A => { let n = A.reduce((a, b) => a + b.length, 0), r = new U8(n), i = 0; A.forEach(a => { r.set(a, i); i += a.length }); return r },
+  xxd = s => new U8([...s].map(s => s.charCodeAt(0))),
+  lpc = b => cat([u32(b.length), b]), // bash $ cat; Length-Prefixed Container -> Len(4) Data(*)
+
+  SHA = async (sum, d) => new U8(await crypto.subtle.digest(sum, d)),
+  protect = async (by, key, hash, name = "RSASSA-PKCS1-v1_5") => {
+    let k = await crypto.subtle.importKey(
+      "pkcs8", key, 
+      { name, hash }, false, ["sign"]
+    )
+    return new U8(await crypto.subtle.sign({name}, k, by))
+  }
+
+//vv https://source.android.com/docs/security/features/apksigning/v2
+const
+  ID_V2   = 0x7109871a,
+  ID_RSAs = [0x0103, 32, 0x0104, 64] //< apksigner verify -v shows NO difference
+  //^ love testkeys, RSA2048
+  // [v2 SHA*] https://android.googlesource.com/platform/build/+/dd910c5/tools/signapk/src/com/android/signapk/ApkSignerV2.java#73
+  // [v1 hash] https://github.com/bcgit/bc-java/blob/main/core/src/main/java/org/bouncycastle/asn1/pkcs/PKCSObjectIdentifiers.java#L170
+
+export let
+V2 = (CERT, PUB, hash = 'SHA-256') => async (pk8, b) => {
+  let dv = new DataView(b), len = b.byteLength, eo, cd
+
+  // 1. Parsing, NOTE trues=isLittleEndian
+  // EOCD(22) = Signature(4)+DiskInfo(12)+CD_Offset(4)+CommentLen(2)
+  for (let i = len - 22; i >= 0; i--) 
+    if (dv.getUint32(i, true) === 0x06054b50) { eo = i; cd = dv.getUint32(i + 16, true); break }
+
+  if (!eo) throw new URIError("No EOCD")
+  let [A,B,C]=[b.slice(0, cd), b.slice(cd, eo), b.slice(eo)]
+  /* 🤓☝️ 但是EOCD可能不在 fileEnd[-22] ，而是between文件尾的 22 到 22 + 65535(CommentLen) 字节
+     🤓☝️ 但是zip内容includes 0x06054b50 怎么办？ 或者zip signed already? 有可能 blk.size>4GB (true u64)? 
+    eo = -1;
+    for (let i = len - 22; i >= Math.max(0, len - 22 - 65535); i--)
+    if (dv.getUint32(i, true) === 0x06054b50 &&
+        i + 22 + dv.getUint16(i + 20, true) === buf.byteLength) {
+      eo = i; cd = dv.getUint32(i + 16, true); break;
+    }
+    //^ And that's why apktool sources are BORING.
+  */
+
+  // 2. Merkle Tree, just like *.SF (apksignV1)
+  // Chunk = 0xa5 Len(4) Data 
+  // Root  = 0x5a Count(4) Chunk(1MB)*
+  let hsum = [], _1MB = 1048576
+  let veo = b.slice(eo); new DataView(veo).setUint32(16, cd, true)
+
+  for (let p of [A,B,veo]) {
+    for (let i = 0; i < p.byteLength; i += _1MB) {
+      let l = Math.min(_1MB, p.byteLength - i), c = new U8(l + 5)
+      c[0] = 0xa5; new DataView(c.buffer).setUint32(1, l, true); c.set(new U8(p, i, l), 5)
+      hsum.push(await SHA(hash, c))
+    }
+  }
+  let [ID_RSA, sz] = ID_RSAs.slice(hash=='SHA-512'? 2:0) // nosupp: P-256, RSA-PSS. added "64-byte" for fun :)
+  let top = new U8(5 + hsum.length * sz) // MERKLE_ROOT_PREFIX_SIZE= PrefixByte(1)+LengthField(4)
+  top[0] = 0x5a; new DataView(top.buffer).setUint32(1, hsum.length, true)
+  hsum.forEach((x, i) => top.set(x, 5 + i * sz))
+
+  // 3. Structure Assembly (PEG)
+  // Block      = Size(8) Pair* SizeAgain(8) Magic
+  // Signer     = SignedData(1MB*N) Signatures PublicKey
+  // SignedData = Digests Certs Attrs
+  let
+    _ = (...b) => lpc(lpc(cat(b))),
+    rot = await SHA(hash, top),
+    dig = _(u32(ID_RSA), lpc(rot)),          // Sequence(DigestStruct)
+    cer = lpc(lpc(CERT)),                    // Sequence(X509)
+    dat = cat([dig, cer, u32(0)]),           // NO X-Android-APK-Signed: nonce, attrs=NULL only
+
+    sig = _(u32(ID_RSA), lpc(await protect(dat, pk8, hash))),
+    sgr = _(lpc(dat), sig, lpc(PUB)),
+    // Pair = Len(8 byte = sizeof:) ID(4)  Signer*
+    pair= cat([u64(4 + sgr.length), u32(ID_V2), sgr]), // NO multi signers
+    //^ https://source.android.com/docs/security/features/apksigning/v2#apk-signing-block
+
+    // Block = Size(8): Pair* SizeAgain(8) Magic(16)
+    tot = pair.length + 24,
+    blk = cat([u64(tot), pair, u64(tot), xxd("APK Sig Block 42")])
+
+  // 4. Inject size
+  new DataView(C).setUint32(16, cd + blk.length, true)
+  return new Blob([A, blk, B, C], {type: "application/vnd.android.package-archive"})
+}
+
+export let
+V1_rsa = (off, hash = "SHA-1") => async (pk8, sf) => {
+  let b = new U8(off.b)
+
+  // 1. Hash SF (eg. sha1sum) & Inject
+  b.set(await SHA(hash, sf), off.hash)
+
+  // 2. Patch Tag (A0 -> 31) & Sign Attributes
+  let at = b.slice(off.attrStart, off.attrEnd); at[0] = 0x31
+
+  // 3. Inject Signature
+  b.set(await protect(at, pk8, hash), off.sig)
+  return b
+}
+
+export let
+V1_off = (pk7, sigAlg = "2048RSA", knownHash = '5a670f8b3cbede111b3320ca2adc65f31ae150ee') => {
+  //^ RSA-2048 nByte=256
+  let
+    b = pk7 ?? U8.fromBase64(prompt()),
+    kSum = knownHash.substr? U8.fromHex(knownHash) : knownHash
+  //^ SHA1 = 20 bytes = 40 %x hex,
+  // = <(echo -n) part of
+  // $ openssl cms -sign -signer cert.bin -inkey private.bin -md sha1 -outform DER -in <(echo -n DUMMY_CONTENT_FOR_TEMPLATE)|base64
+
+  let hash = b.findIndex((_,i)=> i+19 < b.length && kSum.every((x,j)=> x === b[i+j]))
+  if (hash < 0) throw "hash not found"
+
+  // Locate Attributes (Reverse lookup 0xA0), and loads BER/DER length of struct signedAttributes{}
+  // see also https://github.com/fornwall/apksigner/blob/master/src/main/java/net/fornwall/apksigner/SignatureBlockGenerator.java#L49
+  // https://android.googlesource.com/platform/tools/apksig/+/refs/heads/main/src/main/java/com/android/apksig/internal/apk/ApkSigningBlockUtils.java#1200
+  let a0 = b.lastIndexOf(0xA0, hash)
+  // Short head: [Tag] [Len]
+  // Long head:  [Tag] [0x80+N] [B1]...[BN] (shl-concat for Big Endian)
+  let lb = b[a0 + 1], len = lb, head = 2
+  if (lb > 0x7F) {
+    let n = lb & 0x7F
+    len = 0; for(let i=0; i<n; i++) len = (len << 8) | b[a0 + 2 + i]
+    head += n
+  }
+
+  return {
+    sigAlg, hash,
+    attrStart: a0, attrEnd: a0 + head + len,
+    sig: b.length - parseInt(sigAlg)/8, b
+  }
+}
+
+Uint8Array.fromHex ??= (s) => {
+  let m = s.match(/.{1,2}/g);
+  return new Uint8Array(m ? m.map(x => parseInt(x, 16)) : []);
+}
+
+if (window) window.showDirectoryPicker ??= async () => {
+  let e = document.createElement('input');
+  e.type = 'file'; e.webkitdirectory = true;
+  return new Promise(ok => {
+    e.onchange = () => ok({
+      getFileHandle(u) {
+        let it = [...e.files].find(x => x.name === u)
+        if (it) return {
+          getFile: ()=>it
+        }
+        throw "404 (required files)"
+      }
+    })
+    e.click(); 
+  });
+}

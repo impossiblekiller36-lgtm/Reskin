@@ -1,0 +1,36 @@
+{
+  "url": "http://127.0.0.1:8080/",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "Reskin",
+      "hasCanvas": false,
+      "bodyTextLen": 579,
+      "bodyTextHash": "5a9a36cbca7046078df27a51fc1c1b73ad2d183615ba07641c8eabc92a6dbd1a",
+      "bodyTextPrefix": "Reskin How it works APK IMAGE WORKSHOP Print a new skin onto any",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "Reskin",
+      "hasCanvas": false,
+      "bodyTextLen": 579,
+      "bodyTextHash": "5a9a36cbca7046078df27a51fc1c1b73ad2d183615ba07641c8eabc92a6dbd1a",
+      "bodyTextPrefix": "Reskin How it works APK IMAGE WORKSHOP Print a new skin onto any",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/app-builder-preview.json"
+}
